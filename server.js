@@ -1,3 +1,4 @@
+// server.js - Updated with proper CORS configuration
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -12,22 +13,48 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(helmet());
-app.use(compression());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  credentials: true
+// CORS Configuration - UPDATED TO FIX THE ISSUE
+const corsOptions = {
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:3000', 
+    'https://quality-dashboard-naveen.netlify.app',
+    'https://*.netlify.app',
+    process.env.FRONTEND_URL
+  ].filter(Boolean), // Remove any undefined values
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200 // For legacy browser support
+};
+
+// Middleware - UPDATED ORDER
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: false
 }));
+app.use(compression());
+app.use(cors(corsOptions)); // CORS before other middleware
 app.use(express.json());
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.'
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 app.use(limiter);
+
+// Add request logging
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - Origin: ${req.get('Origin')}`);
+  next();
+});
 
 // In-memory cache
 let dataCache = {
@@ -202,7 +229,7 @@ const processStringerDay = (dayData, date, stringerNum) => {
           if (rowIndex < 16) { // Ensure we don't exceed 16 rows
             // Extract values from columns F to L (indices 5-11 in 0-based array)
             const values = [];
-            for (let col = 5; col <= 10; col++) { // F=5, G=6, H=7, I=8, J=9, K=10, L=11 (but we want 6 columns F-K)
+            for (let col = 5; col <= 10; col++) { // F=5, G=6, H=7, I=8, J=9, K=10
               const cellValue = row[col];
               if (cellValue !== undefined && cellValue !== null && cellValue !== '') {
                 const numValue = parseFloat(cellValue);
@@ -311,18 +338,23 @@ const getData = () => {
 
 // API Routes
 
-// Health check
+// Health check - UPDATED WITH CORS HEADERS
 app.get('/api/health', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.get('Origin') || '*');
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '1.0.0',
+    cors: 'enabled',
+    origin: req.get('Origin')
   });
 });
 
 // Get all Phase 2 data with filtering
 app.get('/api/phase2/data', (req, res) => {
   try {
+    res.header('Access-Control-Allow-Origin', req.get('Origin') || '*');
+    
     const data = getData();
     
     if (!data) {
@@ -381,6 +413,8 @@ app.get('/api/phase2/data', (req, res) => {
 // Get daily averages
 app.get('/api/phase2/daily-averages', (req, res) => {
   try {
+    res.header('Access-Control-Allow-Origin', req.get('Origin') || '*');
+    
     const data = getData();
     
     if (!data) {
@@ -455,6 +489,8 @@ app.get('/api/phase2/daily-averages', (req, res) => {
 // Get stringer performance analysis
 app.get('/api/phase2/stringers', (req, res) => {
   try {
+    res.header('Access-Control-Allow-Origin', req.get('Origin') || '*');
+    
     const data = getData();
     
     if (!data) {
@@ -529,6 +565,8 @@ app.get('/api/phase2/stringers', (req, res) => {
 // Refresh data cache
 app.post('/api/refresh', (req, res) => {
   try {
+    res.header('Access-Control-Allow-Origin', req.get('Origin') || '*');
+    
     console.log('Manual data refresh requested');
     dataCache.data = null;
     dataCache.lastUpdated = null;
@@ -558,6 +596,8 @@ app.post('/api/refresh', (req, res) => {
 // Get detailed record
 app.get('/api/phase2/record/:id', (req, res) => {
   try {
+    res.header('Access-Control-Allow-Origin', req.get('Origin') || '*');
+    
     const data = getData();
     
     if (!data) {
@@ -607,6 +647,7 @@ app.listen(PORT, () => {
   console.log(`🚀 IPQC Dashboard Backend running on port ${PORT}`);
   console.log(`📊 API endpoints available at http://localhost:${PORT}/api/`);
   console.log(`📁 Excel file path: ${EXCEL_FILE_PATH}`);
+  console.log(`🌐 CORS enabled for: ${corsOptions.origin.join(', ')}`);
   
   // Initial data load
   const initialData = getData();
