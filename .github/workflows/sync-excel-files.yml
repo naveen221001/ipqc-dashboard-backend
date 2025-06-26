@@ -1,0 +1,171 @@
+name: Sync IPQC Excel Files from OneDrive
+
+on:
+  schedule:
+    # Run every 2 hours during working hours (9 AM to 5 PM, Monday to Friday)
+    - cron: '0 9,11,13,15,17 * * 1-5'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      force_download:
+        description: 'Force download even if file exists'
+        required: false
+        type: boolean
+
+jobs:
+  sync-ipqc-files:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+          
+      - name: Debug environment
+        run: |
+          echo "GitHub workspace: $GITHUB_WORKSPACE"
+          echo "Current directory: $(pwd)"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          ls -la
+          
+      - name: Create data directory
+        run: |
+          mkdir -p data
+          echo "Created data directory"
+          ls -la data/ || echo "Data directory is empty"
+          
+      - name: Check for existing files
+        id: check-files
+        run: |
+          if [ -f "data/IPQC_Peel_Strength.xlsx" ]; then
+            file_size=$(stat -c%s "data/IPQC_Peel_Strength.xlsx")
+            echo "existing_file_size=$file_size" >> $GITHUB_OUTPUT
+            echo "file_exists=true" >> $GITHUB_OUTPUT
+            echo "Existing IPQC file found: $file_size bytes"
+          else
+            echo "file_exists=false" >> $GITHUB_OUTPUT
+            echo "No existing IPQC file found"
+          fi
+          
+      - name: Fetch IPQC Excel file from OneDrive
+        id: download
+        run: |
+          echo "Starting IPQC file download process..."
+          python .github/scripts/download_onedrive_files.py
+        env:
+          IPQC_PEEL_STRENGTH_URL: ${{ secrets.IPQC_PEEL_STRENGTH_URL }}
+
+      - name: Validate downloaded files
+        id: validate
+        run: |
+          echo "=== File Validation Report ==="
+          
+          if [ -f "data/IPQC_Peel_Strength.xlsx" ]; then
+            file_size=$(stat -c%s "data/IPQC_Peel_Strength.xlsx")
+            echo "✅ IPQC file exists: $file_size bytes"
+            echo "file_downloaded=true" >> $GITHUB_OUTPUT
+            echo "new_file_size=$file_size" >> $GITHUB_OUTPUT
+            
+            # Check if file size is reasonable (should be > 1KB for Excel file)
+            if [ $file_size -gt 1024 ]; then
+              echo "✅ File size is reasonable"
+              echo "file_valid=true" >> $GITHUB_OUTPUT
+            else
+              echo "❌ File size too small, may be corrupted"
+              echo "file_valid=false" >> $GITHUB_OUTPUT
+            fi
+            
+            # Check file header for Excel format
+            file_header=$(xxd -l 4 -p "data/IPQC_Peel_Strength.xlsx")
+            if [[ $file_header == "504b0304"* ]]; then
+              echo "✅ File appears to be a valid Excel file (ZIP format)"
+            else
+              echo "⚠️  File may not be in Excel format (header: $file_header)"
+            fi
+          else
+            echo "❌ IPQC file not found after download"
+            echo "file_downloaded=false" >> $GITHUB_OUTPUT
+            echo "file_valid=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Compare file changes
+        id: changes
+        run: |
+          # Always consider files as changed for now to ensure commits
+          # In the future, you could add MD5 checksum comparison here
+          echo "changes_detected=true" >> $GITHUB_OUTPUT
+          echo "Files will be committed to trigger backend refresh"
+          
+          # Create timestamp marker
+          echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" > data/.last_updated
+          
+      - name: Display file information
+        run: |
+          echo "=== Final File Report ==="
+          ls -la data/
+          
+          if [ -f "data/IPQC_Peel_Strength.xlsx" ]; then
+            echo ""
+            echo "IPQC File Details:"
+            echo "- Size: $(stat -c%s data/IPQC_Peel_Strength.xlsx) bytes"
+            echo "- Modified: $(stat -c%y data/IPQC_Peel_Strength.xlsx)"
+            echo "- Type: $(file data/IPQC_Peel_Strength.xlsx)"
+          fi
+          
+      - name: Commit and push changes
+        if: steps.validate.outputs.file_valid == 'true' && steps.changes.outputs.changes_detected == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Add all files in data directory
+          git add data/
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            # Create detailed commit message
+            commit_msg="Update IPQC Excel files - $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+            
+            📊 File Update Summary:
+            - IPQC_Peel_Strength.xlsx: $(stat -c%s data/IPQC_Peel_Strength.xlsx) bytes
+            - Last updated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+            - Trigger: ${{ github.event_name }}
+            
+            🔄 This will trigger backend data refresh automatically."
+            
+            git commit -m "$commit_msg"
+            git push
+            
+            echo "✅ Changes committed and pushed successfully"
+          fi
+          
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ IPQC file sync failed!"
+          echo "Please check the logs and ensure:"
+          echo "1. IPQC_PEEL_STRENGTH_URL secret is correctly set"
+          echo "2. OneDrive share URL is accessible"
+          echo "3. File is a valid Excel format"
+          
+      - name: Success summary
+        if: success()
+        run: |
+          echo "🎉 IPQC file sync completed successfully!"
+          echo "📊 Data is ready for the IPQC Dashboard backend"
+          echo "🔗 Files will be available at: https://github.com/${{ github.repository }}/tree/${{ github.ref_name }}/data"
